@@ -1,0 +1,11 @@
+/home/shinichi/development/rust/rilo/target/rls/debug/deps/crossterm_utils-ca8acade1e28e7cc.rmeta: /home/shinichi/.cargo/registry/src/github.com-1ecc6299db9ec823/crossterm_utils-0.4.0/src/lib.rs /home/shinichi/.cargo/registry/src/github.com-1ecc6299db9ec823/crossterm_utils-0.4.0/src/command.rs /home/shinichi/.cargo/registry/src/github.com-1ecc6299db9ec823/crossterm_utils-0.4.0/src/error.rs /home/shinichi/.cargo/registry/src/github.com-1ecc6299db9ec823/crossterm_utils-0.4.0/src/functions.rs /home/shinichi/.cargo/registry/src/github.com-1ecc6299db9ec823/crossterm_utils-0.4.0/src/macros.rs /home/shinichi/.cargo/registry/src/github.com-1ecc6299db9ec823/crossterm_utils-0.4.0/src/sys.rs /home/shinichi/.cargo/registry/src/github.com-1ecc6299db9ec823/crossterm_utils-0.4.0/src/sys/unix.rs
+
+/home/shinichi/development/rust/rilo/target/rls/debug/deps/crossterm_utils-ca8acade1e28e7cc.d: /home/shinichi/.cargo/registry/src/github.com-1ecc6299db9ec823/crossterm_utils-0.4.0/src/lib.rs /home/shinichi/.cargo/registry/src/github.com-1ecc6299db9ec823/crossterm_utils-0.4.0/src/command.rs /home/shinichi/.cargo/registry/src/github.com-1ecc6299db9ec823/crossterm_utils-0.4.0/src/error.rs /home/shinichi/.cargo/registry/src/github.com-1ecc6299db9ec823/crossterm_utils-0.4.0/src/functions.rs /home/shinichi/.cargo/registry/src/github.com-1ecc6299db9ec823/crossterm_utils-0.4.0/src/macros.rs /home/shinichi/.cargo/registry/src/github.com-1ecc6299db9ec823/crossterm_utils-0.4.0/src/sys.rs /home/shinichi/.cargo/registry/src/github.com-1ecc6299db9ec823/crossterm_utils-0.4.0/src/sys/unix.rs
+
+/home/shinichi/.cargo/registry/src/github.com-1ecc6299db9ec823/crossterm_utils-0.4.0/src/lib.rs:
+/home/shinichi/.cargo/registry/src/github.com-1ecc6299db9ec823/crossterm_utils-0.4.0/src/command.rs:
+/home/shinichi/.cargo/registry/src/github.com-1ecc6299db9ec823/crossterm_utils-0.4.0/src/error.rs:
+/home/shinichi/.cargo/registry/src/github.com-1ecc6299db9ec823/crossterm_utils-0.4.0/src/functions.rs:
+/home/shinichi/.cargo/registry/src/github.com-1ecc6299db9ec823/crossterm_utils-0.4.0/src/macros.rs:
+/home/shinichi/.cargo/registry/src/github.com-1ecc6299db9ec823/crossterm_utils-0.4.0/src/sys.rs:
+/home/shinichi/.cargo/registry/src/github.com-1ecc6299db9ec823/crossterm_utils-0.4.0/src/sys/unix.rs:
