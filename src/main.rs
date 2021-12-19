@@ -200,6 +200,27 @@ fn editor_scroll(ec: &mut EditorConfig){
     }
 }
 
+fn editor_prompt(ec: &mut EditorConfig, prompt: String) -> Vec<u8> {
+    let mut pr = prompt;
+    let mut buf: String = String::new();
+    loop{
+        editor_set_status_message(ec, pr.clone());
+        editor_refresh_screen(ec);
+
+        if let EditorKey::Else(val) = editor_read_key(){
+            if val == '\r' as u8 {
+                if buf.len() != 0 {
+                    editor_set_status_message(ec, String::from(""));
+                    return buf.as_bytes().to_vec();
+                }
+            }else if val != ctrl_key!('c') && val < 128 {
+                buf.push(val as char);
+                pr.push(val as char);
+            }
+        }
+    }
+}
+
 fn editor_move_cursor(key: &Arrow, ec: &mut EditorConfig) {
     let mut tv_ll: u16 = 0;
     if ec.cy < ec.numrows {
@@ -303,6 +324,7 @@ fn editor_process_keypress(ec: &mut EditorConfig) -> Result<usize, & 'static str
             }else if val == ctrl_key!('s') {
                 editor_save(ec);
             }else if val == '\r' as u8 {
+                editor_insert_new_line(ec);
             }else if val == '\x1b' as u8 {
             }else{
                 editor_insert_char(ec, &val);
@@ -442,7 +464,10 @@ fn editor_update_row(c_vec: Vec<u8>) -> Vec<u8> {
     new_vec
 } 
 
-fn editor_append_row(char_vec: &mut Vec<u8>, size: u16, ec: &mut EditorConfig){
+fn editor_insert_row(at: &u16, char_vec: &mut Vec<u8>, size: u16, ec: &mut EditorConfig){
+    if *at > ec.numrows {
+        return;
+    }
     char_vec.append(&mut "\0".as_bytes().to_vec());
     let r_vec = editor_update_row(char_vec.clone());
     let erow: Erow = Erow {
@@ -451,7 +476,8 @@ fn editor_append_row(char_vec: &mut Vec<u8>, size: u16, ec: &mut EditorConfig){
         _rsize: (r_vec.len() - 1) as u16,
         render: r_vec,
     };
-    ec.erow.push(erow);
+    ec.erow.insert(*at as usize, erow);
+    //ec.erow.push(erow);
     ec.numrows += 1;
 }
 
@@ -464,9 +490,27 @@ fn editor_row_insert_character(erow: &mut Erow, at: &mut i16, c: u8){
     erow.render = editor_update_row(erow.chars.clone());
 }
 
+fn editor_insert_new_line(ec: &mut EditorConfig){
+    let mut at = ec.cy;
+    if ec.cx == 0 {
+        editor_insert_row(&at, &mut "".as_bytes().to_vec(), 0, ec)
+    }else{
+        at += 1;
+        let mut row = ec.erow[ec.cy as usize].chars.split_off(ec.cx as usize);
+        ec.erow[ec.cy as usize].size = (ec.erow[ec.cy as usize].chars.len() - 1) as u16;
+        ec.erow[ec.cy as usize].render = editor_update_row(ec.erow[ec.cy as usize].chars.clone());
+
+        let size = row.len() as u16;
+        editor_insert_row(&at, &mut row,  size, ec)
+    }
+    ec.cy += 1;
+    ec.cx = 0;
+}
+
 fn editor_insert_char(ec: &mut EditorConfig, c: &u8){
     if ec.cy == ec.numrows {
-        editor_append_row(&mut "".as_bytes().to_vec(), 0, ec);
+        let at = ec.cy;
+        editor_insert_row(&at, &mut "".as_bytes().to_vec(), 0, ec);
     }
     let mut at: i16 = ec.cx as i16; 
     editor_row_insert_character(&mut ec.erow[ec.cy as usize], &mut at, *c);
@@ -518,7 +562,8 @@ fn editor_open(filename: &String, ec: &mut EditorConfig) {
                 }
                 if ll != 0 {
                     vec_line.truncate(ll);
-                    editor_append_row(&mut vec_line, ll as u16, ec);
+                    let at = ec.numrows;
+                    editor_insert_row(&at, &mut vec_line, ll as u16, ec);
                 }
             },
             Err(e) => panic!("File read line fail:{:?}",e),
@@ -529,7 +574,7 @@ fn editor_open(filename: &String, ec: &mut EditorConfig) {
 
 fn editor_save(ec: &mut EditorConfig) {
     if ec.filename.is_empty() {
-        return;
+        ec.filename = editor_prompt(ec, String::from("Save as: "));
     }
     let path = String::from_utf8(ec.filename.clone()).unwrap();
     let w_vec: Vec<u8> = editor_rows_to_string(ec);
