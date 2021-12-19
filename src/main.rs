@@ -3,14 +3,15 @@ extern crate termios;
 use std::os::unix::io::{AsRawFd};
 use std::io::{self, Write, Read, stdout, stdin,  BufRead};
 use std::path::Path;
-use std::fs::File;
-use std::{env};
+use std::fs::{File};
+use std::{env, str};
 use std::time::{Instant, Duration};
 use termios::*;
 use terminal_size::{Width, Height, terminal_size};
 
 pub const RILO_VERSION: u16 = 1;
 pub const RILO_TAB_STOP: u16 = 8;
+pub const RILO_QUIT_TIMES: u16 = 3;
 
 macro_rules! ctrl_key {
     ($ch:expr) => {
@@ -37,6 +38,7 @@ enum Function {
     Home,
     End,
     Delete,
+    Backspace,
 }
 
 struct EditorConfig {
@@ -53,6 +55,8 @@ struct EditorConfig {
     filename: Vec<u8>,
     statusmsg: Vec<u8>,
     statusmsg_time: Instant,
+    dirty: bool,
+    quit_times: u16,
 }
 
 struct AppendBuffer {
@@ -155,6 +159,8 @@ fn editor_read_key() -> EditorKey {
             };
         }
         return EditorKey::Else(b'\x1b')
+    }else if c[0] == 127 {
+        return EditorKey::Function(Function::Backspace)
     }else{
         EditorKey::Else(c[0])
     }
@@ -236,7 +242,6 @@ fn editor_move_cursor(key: &Arrow, ec: &mut EditorConfig) {
 
 fn editor_process_keypress(ec: &mut EditorConfig) -> Result<usize, & 'static str> {
     let inkey: EditorKey = editor_read_key();
-    let mut inkey_val: u8 = 0;
     match inkey {
         EditorKey::Arrow(arrow) => {
             editor_move_cursor(&arrow, ec);
@@ -269,18 +274,41 @@ fn editor_process_keypress(ec: &mut EditorConfig) -> Result<usize, & 'static str
                         ec.cx = ec.erow[ec.cy as usize].size;
                     }
                 },
-                Function::Delete => (),
+                Function::Delete => {
+                    editor_move_cursor(&Arrow::Right, ec);
+                    editor_delete_char(ec);
+                },
+                Function::Backspace => {
+                    editor_delete_char(ec);
+                },
             }
         }
         EditorKey::Else(val) => {
-            inkey_val = val;
+            if val == ctrl_key!('q') {
+                if ec.dirty && ec.quit_times > 0 {
+                    editor_set_status_message(ec,
+                        format!(
+                        "WARNING!!! File has unsaves changes. Press Ctrl-Q {} more times to quit.",
+                        ec.quit_times)
+                    );
+                    ec.quit_times -= 1;
+                    return Ok(0)
+                }
+                stdout().write("\x1b[2J".as_bytes()).unwrap();
+                stdout().write("\x1b[H".as_bytes()).unwrap();
+                return Ok(1)
+            }else if val == ctrl_key!('h') {
+                editor_delete_char(ec);
+            }else if val == ctrl_key!('l') {
+            }else if val == ctrl_key!('s') {
+                editor_save(ec);
+            }else if val == '\r' as u8 {
+            }else if val == '\x1b' as u8 {
+            }else{
+                editor_insert_char(ec, &val);
+            }
         }, 
     };
-    if inkey_val == ctrl_key!('q') {
-        stdout().write("\x1b[2J".as_bytes()).unwrap();
-        stdout().write("\x1b[H".as_bytes()).unwrap();
-        return Ok(1)
-    }
     Ok(0)
 }
 
@@ -329,6 +357,9 @@ fn editor_draw_status_bar(ec: &EditorConfig, abuf: &mut AppendBuffer){
     let mut status = ec.filename.clone();
     let mut line = format!(" - {} lines", ec.numrows); 
     status.append(&mut line.as_bytes().to_vec());
+    if ec.dirty {
+        status.append(&mut "(modified)".as_bytes().to_vec());
+    }
     let mut len = status.len() as u16;
     if len > ec.screen_cols {
         status.truncate(ec.screen_cols as usize);
@@ -389,6 +420,7 @@ fn editor_refresh_screen(ec: &mut EditorConfig) {
 
 fn editor_set_status_message(ec: &mut EditorConfig, fmt: String) {
     ec.statusmsg = fmt.clone().as_bytes().to_vec();
+    ec.statusmsg_time = Instant::now();
 }
 
 fn editor_update_row(c_vec: Vec<u8>) -> Vec<u8> {
@@ -416,11 +448,57 @@ fn editor_append_row(char_vec: &mut Vec<u8>, size: u16, ec: &mut EditorConfig){
     let erow: Erow = Erow {
         size: size,
         chars: char_vec.clone(),
-        _rsize: r_vec.len() as u16,
+        _rsize: (r_vec.len() - 1) as u16,
         render: r_vec,
     };
     ec.erow.push(erow);
     ec.numrows += 1;
+}
+
+fn editor_row_insert_character(erow: &mut Erow, at: &mut i16, c: u8){
+    if *at < 0 || *at > erow.size as i16 {
+        *at = erow.size as i16;
+    }
+    erow.chars.insert(*at as usize, c);
+    erow.size += 1;
+    erow.render = editor_update_row(erow.chars.clone());
+}
+
+fn editor_insert_char(ec: &mut EditorConfig, c: &u8){
+    if ec.cy == ec.numrows {
+        editor_append_row(&mut "".as_bytes().to_vec(), 0, ec);
+    }
+    let mut at: i16 = ec.cx as i16; 
+    editor_row_insert_character(&mut ec.erow[ec.cy as usize], &mut at, *c);
+    ec.cx += 1;
+    ec.dirty = true;
+}
+
+fn editor_row_delete_char(erow: &mut Erow, at: &mut i16){
+    erow.chars.remove(*at as usize);
+    erow.size -= 1;
+    erow.render = editor_update_row(erow.chars.clone());
+}
+
+fn editor_delete_char(ec: &mut EditorConfig){
+    if ec.cy == ec.numrows {
+        return;
+    }
+    let mut at: i16 = (ec.cx - 1) as i16;
+    editor_row_delete_char(&mut ec.erow[ec.cy as usize], &mut at);
+    ec.cx -= 1;
+    ec.dirty = true;
+}
+
+fn editor_rows_to_string(ec: &mut EditorConfig) -> Vec<u8> {
+    let mut buf_vec: Vec<u8> = Vec::new();
+    for v_erow in ec.erow.iter_mut() {
+        let mut temp_vec = v_erow.chars.clone();
+        temp_vec.pop();
+        temp_vec.push('\n' as u8);
+        buf_vec.append(&mut temp_vec);
+    }
+    buf_vec
 }
 
 fn editor_open(filename: &String, ec: &mut EditorConfig) {
@@ -449,6 +527,19 @@ fn editor_open(filename: &String, ec: &mut EditorConfig) {
     }
 }
 
+fn editor_save(ec: &mut EditorConfig) {
+    if ec.filename.is_empty() {
+        return;
+    }
+    let path = String::from_utf8(ec.filename.clone()).unwrap();
+    let w_vec: Vec<u8> = editor_rows_to_string(ec);
+    let len = w_vec.len();
+    std::fs::write(path, w_vec).unwrap();
+    editor_set_status_message(ec, format!("{} bytes written to disk", len));
+    ec.dirty = false;
+    ec.quit_times = RILO_QUIT_TIMES;
+}
+
 fn init_editor() -> EditorConfig {
     let mut ec: EditorConfig = EditorConfig{ 
         cx: 0, cy: 0, rx: 0,
@@ -461,6 +552,8 @@ fn init_editor() -> EditorConfig {
         filename: Vec::new(),
         statusmsg: Vec::new(),
         statusmsg_time: Instant::now(),
+        dirty: false,
+        quit_times: RILO_QUIT_TIMES,
     };
     if let Some((Width(w), Height(h))) = get_window_size() {
         ec.screen_rows = h - 2;
