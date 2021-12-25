@@ -180,6 +180,24 @@ fn editor_row_cxtorx(vec: Vec<u8>, cx: usize) -> u16 {
     rx
 }
 
+fn editor_row_rxtocx(vec: Vec<u8>, rx: usize) -> u16 {
+    let mut cx: u16 = 0;
+    let mut cur_rx: u16 = 0;
+    let v_iter = vec.iter();
+    for ch in v_iter {
+        if *ch == b'\t' {
+            cur_rx += (RILO_TAB_STOP - 1) - ( cur_rx % RILO_TAB_STOP) + 1;
+        }else{
+            cur_rx += 1;
+        }
+        if cur_rx > rx as u16 {
+            return cx;
+        }
+        cx += 1;
+    }
+    cx
+}
+
 fn editor_scroll(ec: &mut EditorConfig){
     ec.rx = 0;
     if ec.cy < ec.numrows {
@@ -201,10 +219,20 @@ fn editor_scroll(ec: &mut EditorConfig){
 }
 
 fn editor_prompt(ec: &mut EditorConfig, prompt: String) -> Vec<u8> {
-    let mut pr = prompt;
     let mut buf: String = String::new();
     loop{
-        editor_set_status_message(ec, pr.clone());
+        let mut message = String::new();
+        for c in prompt.as_str().chars(){
+            if c == '{' {
+                for buf_c in buf.chars(){
+                    message.push(buf_c);
+                }
+            }else if c == '}' {
+            }else {
+                message.push(c);
+            }
+        }
+        editor_set_status_message(ec, message);
         editor_refresh_screen(ec);
 
         if let EditorKey::Else(val) = editor_read_key(){
@@ -215,7 +243,6 @@ fn editor_prompt(ec: &mut EditorConfig, prompt: String) -> Vec<u8> {
                 }
             }else if val != ctrl_key!('c') && val < 128 {
                 buf.push(val as char);
-                pr.push(val as char);
             }
         }
     }
@@ -320,7 +347,8 @@ fn editor_process_keypress(ec: &mut EditorConfig) -> Result<usize, & 'static str
                 return Ok(1)
             }else if val == ctrl_key!('h') {
                 editor_delete_char(ec);
-            }else if val == ctrl_key!('l') {
+            }else if val == ctrl_key!('f') {
+                editor_find(ec);
             }else if val == ctrl_key!('s') {
                 editor_save(ec);
             }else if val == '\r' as u8 {
@@ -574,7 +602,7 @@ fn editor_open(filename: &String, ec: &mut EditorConfig) {
 
 fn editor_save(ec: &mut EditorConfig) {
     if ec.filename.is_empty() {
-        ec.filename = editor_prompt(ec, String::from("Save as: "));
+        ec.filename = editor_prompt(ec, String::from("Save as: {} (ESC to cancel)"));
     }
     let path = String::from_utf8(ec.filename.clone()).unwrap();
     let w_vec: Vec<u8> = editor_rows_to_string(ec);
@@ -583,6 +611,32 @@ fn editor_save(ec: &mut EditorConfig) {
     editor_set_status_message(ec, format!("{} bytes written to disk", len));
     ec.dirty = false;
     ec.quit_times = RILO_QUIT_TIMES;
+}
+
+fn editor_find(ec: &mut EditorConfig){
+    let query = String::from_utf8(editor_prompt(ec, String::from("Search: {} (ESC to cancel)"))).unwrap();
+    let q_len = query.len();
+    if q_len == 0 {
+        return;
+    }
+    let mut i: usize = 0;
+    while i < ec.numrows as usize {
+        let erow: String = String::from_utf8(ec.erow[i].render.clone()).unwrap();
+        if q_len <= erow.len() {
+            let mut pt: usize = 0;
+            while pt <= erow.len() - q_len {
+                if query == &erow[pt..(pt + q_len)]{
+                    ec.cy = i as u16;
+                    ec.cx = editor_row_rxtocx(ec.erow[i].chars.clone(), pt);
+                    ec.rowoff = ec.numrows;
+                    i = (ec.numrows - 1) as usize;
+                    break;
+                }
+                pt += 1;
+            }
+        }
+        i += 1;
+    }
 }
 
 fn init_editor() -> EditorConfig {
@@ -623,7 +677,8 @@ fn main() {
         }
     }
 
-    editor_set_status_message(&mut ec, String::from("HELP: Ctrl-q = quit"));
+    editor_set_status_message(&mut ec,
+        String::from("HELP: Ctrl-s = save | Ctrl-q = quit | Ctrl-f = find"));
 
     loop {
         editor_refresh_screen(&mut ec);
