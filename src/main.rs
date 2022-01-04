@@ -57,6 +57,8 @@ struct EditorConfig {
     statusmsg_time: Instant,
     dirty: bool,
     quit_times: u16,
+    last_match: i32,
+    direction: i32,
 }
 
 struct AppendBuffer {
@@ -70,7 +72,6 @@ struct Erow {
     _rsize: u16,
     render: Vec<u8>,
 }
-
 
 fn ab_append(abuf: &mut AppendBuffer, s: &mut Vec<u8>) {
     abuf.b.append(s);
@@ -87,7 +88,7 @@ fn enable_raw_mode() -> Termios {
     termios.c_cflag |= CS8;
     termios.c_lflag &= !(ECHO | ICANON | IEXTEN | ISIG);
     termios.c_cc[VMIN] = 0;
-    termios.c_cc[VTIME] = 10;
+    termios.c_cc[VTIME] = 1;
     tcsetattr(stdin, TCSAFLUSH, &termios).unwrap();    
 
     org_termios
@@ -218,7 +219,8 @@ fn editor_scroll(ec: &mut EditorConfig){
     }
 }
 
-fn editor_prompt(ec: &mut EditorConfig, prompt: String) -> Vec<u8> {
+fn editor_prompt(ec: &mut EditorConfig, prompt: String, fb: Option<fn(&mut EditorConfig, &String, &EditorKey)>)
+    -> Vec<u8> {
     let mut buf: String = String::new();
     loop{
         let mut message = String::new();
@@ -235,16 +237,38 @@ fn editor_prompt(ec: &mut EditorConfig, prompt: String) -> Vec<u8> {
         editor_set_status_message(ec, message);
         editor_refresh_screen(ec);
 
-        if let EditorKey::Else(val) = editor_read_key(){
-            if val == '\r' as u8 {
-                if buf.len() != 0 {
+        let keyin = editor_read_key();
+        match keyin {
+            EditorKey::Function(Function::Backspace) |
+            EditorKey::Function(Function::Delete) => {
+                buf.pop();
+            },
+            EditorKey::Else(val) => {
+                if val == '\r' as u8 {
+                    if buf.len() != 0 {
+                        editor_set_status_message(ec, String::from(""));
+                        if let Some(call_back) = fb {
+                            call_back(ec, &buf, &keyin);
+                        } 
+                        return buf.as_bytes().to_vec();
+                    }
+                }else if val == '\x1b' as u8 {
                     editor_set_status_message(ec, String::from(""));
-                    return buf.as_bytes().to_vec();
+                    if let Some(call_back) = fb {
+                        call_back(ec, &buf, &keyin);
+                    } 
+                    return "".as_bytes().to_vec();
+                }else if val != ctrl_key!('c') && val < 128 {
+                    buf.push(val as char);
+                }else if val == ctrl_key!('h') as u8 {
+                    buf.pop();
                 }
-            }else if val != ctrl_key!('c') && val < 128 {
-                buf.push(val as char);
-            }
+            },
+            _ => (),
         }
+        if let Some(call_back) = fb {
+            call_back(ec, &buf, &keyin);
+        } 
     }
 }
 
@@ -533,6 +557,7 @@ fn editor_insert_new_line(ec: &mut EditorConfig){
     }
     ec.cy += 1;
     ec.cx = 0;
+    ec.dirty = true;
 }
 
 fn editor_insert_char(ec: &mut EditorConfig, c: &u8){
@@ -602,7 +627,8 @@ fn editor_open(filename: &String, ec: &mut EditorConfig) {
 
 fn editor_save(ec: &mut EditorConfig) {
     if ec.filename.is_empty() {
-        ec.filename = editor_prompt(ec, String::from("Save as: {} (ESC to cancel)"));
+        let cb: Option<fn(&mut EditorConfig, &String, &EditorKey)> = None;
+        ec.filename = editor_prompt(ec, String::from("Save as: {} (ESC to cancel)"), cb);
     }
     let path = String::from_utf8(ec.filename.clone()).unwrap();
     let w_vec: Vec<u8> = editor_rows_to_string(ec);
@@ -613,29 +639,72 @@ fn editor_save(ec: &mut EditorConfig) {
     ec.quit_times = RILO_QUIT_TIMES;
 }
 
-fn editor_find(ec: &mut EditorConfig){
-    let query = String::from_utf8(editor_prompt(ec, String::from("Search: {} (ESC to cancel)"))).unwrap();
-    let q_len = query.len();
-    if q_len == 0 {
-        return;
+fn editor_find_callback(ec: &mut EditorConfig, query: &String, key: &EditorKey) {
+    match key {
+        EditorKey::Arrow(Arrow::Right) | EditorKey::Arrow(Arrow::Down) => ec.direction = 1,
+        EditorKey::Arrow(Arrow::Left) | EditorKey::Arrow(Arrow::Up) => ec.direction = -1,
+        EditorKey::Else(val) => {
+            if *val == '\r' as u8 || *val == '\x1b' as u8 {
+                ec.last_match = -1;
+                ec.direction = 1;
+                return;
+            }else{
+                ec.last_match = -1;
+                ec.direction = 1;
+            }
+        },
+        _ => {
+            ec.last_match = -1;
+            ec.direction = 1;
+        },
     }
+
     let mut i: usize = 0;
+    let q_len = query.len();
+    if ec.last_match == -1 {
+        ec.direction = 1;
+    }
+    let mut current = ec.last_match;
     while i < ec.numrows as usize {
-        let erow: String = String::from_utf8(ec.erow[i].render.clone()).unwrap();
+        current += ec.direction;
+        if current == -1 {
+            current = (ec.numrows - 1) as i32;
+        }else if current == ec.numrows as i32 {
+            current = 0;
+        }
+        let erow: String = String::from_utf8(ec.erow[current as usize].render.clone()).unwrap();
         if q_len <= erow.len() {
             let mut pt: usize = 0;
             while pt <= erow.len() - q_len {
                 if query == &erow[pt..(pt + q_len)]{
-                    ec.cy = i as u16;
-                    ec.cx = editor_row_rxtocx(ec.erow[i].chars.clone(), pt);
+                    ec.last_match = current;
+                    ec.cy = current as u16;
+                    ec.cx = editor_row_rxtocx(ec.erow[current as usize].chars.clone(), pt);
                     ec.rowoff = ec.numrows;
-                    i = (ec.numrows - 1) as usize;
-                    break;
+                    return;
                 }
                 pt += 1;
             }
         }
         i += 1;
+    }
+}
+
+fn editor_find(ec: &mut EditorConfig){
+    let saved_cx = ec.cx;
+    let saved_cy = ec.cy;
+    let saved_coloff = ec.coloff;
+    let saved_rowoff = ec.rowoff;
+
+    let cb: Option<fn(&mut EditorConfig, &String, &EditorKey)> = Some(editor_find_callback);
+    let query = String::from_utf8(
+        editor_prompt(ec, String::from("Search: {} (Use ESC/Arrows/Enter)"), cb)).unwrap();
+
+    if query.len() == 0 {
+        ec.cx = saved_cx;
+        ec.cy = saved_cy;
+        ec.coloff = saved_coloff;
+        ec.rowoff = saved_rowoff;
     }
 }
 
@@ -653,6 +722,8 @@ fn init_editor() -> EditorConfig {
         statusmsg_time: Instant::now(),
         dirty: false,
         quit_times: RILO_QUIT_TIMES,
+        last_match: -1,
+        direction: 1,
     };
     if let Some((Width(w), Height(h))) = get_window_size() {
         ec.screen_rows = h - 2;
