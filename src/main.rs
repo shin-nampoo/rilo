@@ -418,7 +418,16 @@ fn editor_draw_rows(w: &mut EditorConfig, abuf: &mut AppendBuffer) {
             if disp_vec.len() > w.screen_cols as usize {
                 disp_vec.truncate(w.screen_cols as usize - 1);
             }
-            ab_append(abuf, &mut disp_vec);
+            let disp_vec_iter = disp_vec.iter();
+            for val in disp_vec_iter{
+                if (*val as char).is_numeric() {
+                    ab_append(abuf, &mut "\x1b[31m".as_bytes().to_vec());
+                    ab_append(abuf, &mut std::slice::from_ref(val).to_vec());
+                    ab_append(abuf, &mut "\x1b[39m".as_bytes().to_vec());
+                }else{
+                    ab_append(abuf, &mut std::slice::from_ref(val).to_vec());
+                }
+            }
         }
         ab_append(abuf, &mut "\x1b[K".as_bytes().to_vec());
         ab_append(abuf, &mut "\r\n".as_bytes().to_vec());
