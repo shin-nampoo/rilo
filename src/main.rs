@@ -12,6 +12,9 @@ use terminal_size::{Width, Height, terminal_size};
 pub const RILO_VERSION: u16 = 1;
 pub const RILO_TAB_STOP: u16 = 8;
 pub const RILO_QUIT_TIMES: u16 = 3;
+pub const HL_NORMAL: u8 = 0;
+pub const HL_NUMBER: u8 = 1;
+pub const HL_MATCH: u8 = 2;
 
 macro_rules! ctrl_key {
     ($ch:expr) => {
@@ -59,6 +62,10 @@ struct EditorConfig {
     quit_times: u16,
     last_match: i32,
     direction: i32,
+    current_color: i8,
+    saved_hl_line: i16,
+    saved_hl: Vec<u8>,
+    editor_syntax: EditorSyntax,
 }
 
 struct AppendBuffer {
@@ -66,11 +73,30 @@ struct AppendBuffer {
     len: usize,
 }
 
+struct EditorSyntax {
+    file_type: String,
+    file_extensions: Vec<String>,
+    highlight_number: u8,
+    is_null: Option<u8>,
+}
+
+impl EditorSyntax {
+    fn new() -> EditorSyntax {
+        EditorSyntax{
+            file_type: String::from(""),
+            file_extensions: Vec::new(),
+            highlight_number: HL_NORMAL,
+            is_null: None,
+        }
+    }
+}
+
 struct Erow {
     size: u16,
     chars: Vec<u8>,
     _rsize: u16,
     render: Vec<u8>,
+    hl: Vec<u8>,
 }
 
 fn ab_append(abuf: &mut AppendBuffer, s: &mut Vec<u8>) {
@@ -165,6 +191,44 @@ fn editor_read_key() -> EditorKey {
     }else{
         EditorKey::Else(c[0])
     }
+}
+
+fn is_separator(c: char) -> bool {
+    match c {
+        ' ' | ',' | '.' | '(' | ')' | '+' | '-' | '/' | '*' |
+        '=' | '~' | '%' | '<' | '>' | '[' | ']' | ';' => true,
+        _ => false,
+    }
+}
+
+fn editor_update_syntax(erow: &mut Erow){
+    let mut idx = 0;
+    erow.hl.clear();
+    let mut prev_sep = false;
+    let mut prev_hl = HL_NORMAL;
+    while idx < erow.render.len() {
+        if idx > 0 {
+            prev_hl = erow.hl[idx - 1];
+        }
+        if (erow.render[idx] as char).is_numeric() && ( prev_hl == HL_NUMBER || prev_sep){
+            erow.hl.push(HL_NUMBER);
+            prev_sep = true;
+        }else{
+            erow.hl.push(HL_NORMAL);
+            prev_sep = is_separator(erow.render[idx] as char);
+        }
+        idx += 1;
+    }
+}
+
+fn editor_syntax_to_color(hl: u8) -> u8 {
+    if hl == HL_NUMBER {
+        return 31;
+    }
+    if hl == HL_MATCH {
+        return 34;
+    }
+    37
 }
 
 fn editor_row_cxtorx(vec: Vec<u8>, cx: usize) -> u16 {
@@ -418,16 +482,27 @@ fn editor_draw_rows(w: &mut EditorConfig, abuf: &mut AppendBuffer) {
             if disp_vec.len() > w.screen_cols as usize {
                 disp_vec.truncate(w.screen_cols as usize - 1);
             }
-            let disp_vec_iter = disp_vec.iter();
-            for val in disp_vec_iter{
-                if (*val as char).is_numeric() {
-                    ab_append(abuf, &mut "\x1b[31m".as_bytes().to_vec());
-                    ab_append(abuf, &mut std::slice::from_ref(val).to_vec());
-                    ab_append(abuf, &mut "\x1b[39m".as_bytes().to_vec());
+            let hl_vec: Vec<u8> = w.erow[filerow as usize].hl.clone();
+            let mut idx = 0;
+            while idx < hl_vec.len() {
+                if hl_vec[idx] == HL_NORMAL {
+                    if w.current_color != -1 {
+                        ab_append(abuf, &mut "\x1b[39m".as_bytes().to_vec());
+                        w.current_color = -1;
+                    }
+                    ab_append(abuf, &mut std::slice::from_ref(&disp_vec[idx]).to_vec());
                 }else{
-                    ab_append(abuf, &mut std::slice::from_ref(val).to_vec());
+                    let color: i8 = editor_syntax_to_color(hl_vec[idx]) as i8;
+                    if color != w.current_color {
+                        w.current_color = color;
+                        let clen = format!("\x1b[{}m", color); 
+                        ab_append(abuf, &mut clen.as_bytes().to_vec());
+                    }
+                    ab_append(abuf, &mut std::slice::from_ref(&disp_vec[idx]).to_vec());
                 }
+                idx += 1;
             }
+            ab_append(abuf, &mut "\x1b[39m".as_bytes().to_vec());
         }
         ab_append(abuf, &mut "\x1b[K".as_bytes().to_vec());
         ab_append(abuf, &mut "\r\n".as_bytes().to_vec());
@@ -448,7 +523,11 @@ fn editor_draw_status_bar(ec: &EditorConfig, abuf: &mut AppendBuffer){
         status.truncate(ec.screen_cols as usize);
     }
     ab_append(abuf, &mut status);
-    line = format!("{}/{}", ec.cy + 1, ec.numrows);
+    let ft: String = match ec.editor_syntax.is_null {
+            None => String::from("no ft"),
+            _ => ec.editor_syntax.file_type.clone(),
+        };
+    line = format!("{} | {}/{}", ft, ec.cy + 1, ec.numrows);
     status.append(&mut line.as_bytes().to_vec());
     let rlen = status.len() as u16;
     while len < ec.screen_cols {
@@ -531,12 +610,15 @@ fn editor_insert_row(at: &u16, char_vec: &mut Vec<u8>, size: u16, ec: &mut Edito
     }
     char_vec.append(&mut "\0".as_bytes().to_vec());
     let r_vec = editor_update_row(char_vec.clone());
-    let erow: Erow = Erow {
+    let hl_vec: Vec<u8> = Vec::new();
+    let mut erow: Erow = Erow {
         size: size,
         chars: char_vec.clone(),
         _rsize: (r_vec.len() - 1) as u16,
         render: r_vec,
+        hl: hl_vec,
     };
+    editor_update_syntax(&mut erow);
     ec.erow.insert(*at as usize, erow);
     //ec.erow.push(erow);
     ec.numrows += 1;
@@ -549,6 +631,7 @@ fn editor_row_insert_character(erow: &mut Erow, at: &mut i16, c: u8){
     erow.chars.insert(*at as usize, c);
     erow.size += 1;
     erow.render = editor_update_row(erow.chars.clone());
+    editor_update_syntax(erow);
 }
 
 fn editor_insert_new_line(ec: &mut EditorConfig){
@@ -560,13 +643,14 @@ fn editor_insert_new_line(ec: &mut EditorConfig){
         let mut row = ec.erow[ec.cy as usize].chars.split_off(ec.cx as usize);
         ec.erow[ec.cy as usize].size = (ec.erow[ec.cy as usize].chars.len() - 1) as u16;
         ec.erow[ec.cy as usize].render = editor_update_row(ec.erow[ec.cy as usize].chars.clone());
-
+        editor_update_syntax(&mut ec.erow[ec.cy as usize]);
         let size = row.len() as u16;
         editor_insert_row(&at, &mut row,  size, ec)
     }
     ec.cy += 1;
     ec.cx = 0;
     ec.dirty = true;
+    
 }
 
 fn editor_insert_char(ec: &mut EditorConfig, c: &u8){
@@ -584,6 +668,7 @@ fn editor_row_delete_char(erow: &mut Erow, at: &mut i16){
     erow.chars.remove(*at as usize);
     erow.size -= 1;
     erow.render = editor_update_row(erow.chars.clone());
+    editor_update_syntax(erow);
 }
 
 fn editor_delete_char(ec: &mut EditorConfig){
@@ -649,6 +734,10 @@ fn editor_save(ec: &mut EditorConfig) {
 }
 
 fn editor_find_callback(ec: &mut EditorConfig, query: &String, key: &EditorKey) {
+    if ec.saved_hl.len() != 0 {
+        ec.erow[ec.saved_hl_line as usize].hl = ec.saved_hl.clone();
+        ec.saved_hl.clear();
+    }
     match key {
         EditorKey::Arrow(Arrow::Right) | EditorKey::Arrow(Arrow::Down) => ec.direction = 1,
         EditorKey::Arrow(Arrow::Left) | EditorKey::Arrow(Arrow::Up) => ec.direction = -1,
@@ -690,6 +779,13 @@ fn editor_find_callback(ec: &mut EditorConfig, query: &String, key: &EditorKey) 
                     ec.cy = current as u16;
                     ec.cx = editor_row_rxtocx(ec.erow[current as usize].chars.clone(), pt);
                     ec.rowoff = ec.numrows;
+                    ec.saved_hl_line = current as i16;
+                    ec.saved_hl = ec.erow[current as usize].hl.clone();
+                    let mut idx = 0;
+                    while idx < q_len {
+                        ec.erow[current as usize].hl[pt + idx] = HL_MATCH;
+                        idx += 1;
+                    }
                     return;
                 }
                 pt += 1;
@@ -733,6 +829,10 @@ fn init_editor() -> EditorConfig {
         quit_times: RILO_QUIT_TIMES,
         last_match: -1,
         direction: 1,
+        current_color: -1,
+        saved_hl: Vec::new(),
+        saved_hl_line: -1,
+        editor_syntax: EditorSyntax::new(),
     };
     if let Some((Width(w), Height(h))) = get_window_size() {
         ec.screen_rows = h - 2;
