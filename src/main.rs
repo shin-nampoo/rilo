@@ -7,9 +7,9 @@ use std::io::{Read, stdin};
 use std::{env};
 use termios::*;
 use terminal_size::{terminal_size};
-
+// comment test
 pub enum EditorKey{
-    Arrow(Arrow),
+    Arrow(Arrow),  //comment test2
     Function(Function),
     Else(u8),
 }

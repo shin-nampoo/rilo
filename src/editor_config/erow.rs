@@ -21,12 +21,27 @@ impl Erow {
             },
             Some(val) => es = val,
         }
+        let scs_len = es.singleline_comment_start.len();
+        let scs = es.singleline_comment_start.clone();
         let mut idx = 0;
-        let mut prev_sep = false;
-        let mut prev_hl = Highlight::NORMAL;
+        let mut prev_sep = true;
+        let mut prev_hl: Highlight;
+        let erow_str: String = String::from_utf8(self.render.clone()).unwrap();
         while idx < self.render.len() {
             if idx > 0 {
                 prev_hl = self.hl[idx - 1].clone();
+            }else{
+                prev_hl = Highlight::NORMAL;
+            }
+            if scs_len != 0 && si.in_string == 0 {
+                if (self._rsize as usize) - idx >= scs_len && 
+                    self.render[idx..(idx + scs_len)] == scs.as_bytes().to_vec() {
+                    while idx < self.render.len() {
+                        self.hl[idx] = Highlight::COMMENT;
+                        idx += 1;
+                    }
+                    return;
+                }
             }
             if es.flags.contains(HLFlags::HLF_STRINGS) {
                 if si.in_string != 0 {
@@ -41,7 +56,7 @@ impl Erow {
                     prev_sep = true;
                     continue;
                 }else{
-                    if self.render[idx] as char == '"' || self.render[idx] as char == '/' {
+                    if self.render[idx] as char == '"' || self.render[idx] as char == '\'' {
                         si.in_string = self.render[idx];
                         self.hl[idx] = Highlight::STRING;
                         idx += 1;
@@ -54,7 +69,35 @@ impl Erow {
                         ( matches!(prev_hl, Highlight::NUMBER) || prev_sep){
                     self.hl[idx] = Highlight::NUMBER;
                     idx += 1;
-                    prev_sep = true;
+                    prev_sep = false;
+                    continue;
+                }
+            }
+            if prev_sep {
+                let mut kwd: String;
+                let mut hlk: Highlight;
+                let mut k_idx: usize = 0;
+                while k_idx < es.keywords.len() {
+                    kwd = es.keywords[k_idx].clone();
+                    if &kwd[kwd.len() - 1..kwd.len()] == "|" {
+                        kwd.pop();
+                        hlk = Highlight::KEYWORD2;
+                    }else{
+                        hlk = Highlight::KEYWORD1;
+                    }
+                    if (self._rsize as usize) - idx >= kwd.len() && 
+                            &erow_str[idx..(idx + kwd.len())] == &kwd[..] {
+                        let hl_max = idx + kwd.len();
+                        while idx < hl_max {
+                            self.hl[idx] = hlk.clone();
+                            idx += 1;
+                        }
+                        break;
+                    }
+                    k_idx += 1;
+                }
+                if k_idx != es.keywords.len(){
+                    prev_sep = false;
                     continue;
                 }
             }
