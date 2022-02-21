@@ -40,17 +40,19 @@ pub struct EditorSyntaxInf {
 pub struct EditorSyntax {
     file_type: String,
     file_extensions: Vec<String>,
+    pub keywords: Vec<String>,
+    singleline_comment_start: String,
     pub flags: HLFlags,
-    pub numbers: u8,
 }
 
 impl EditorSyntax {
-    fn new(f_type: &str, f_ext: Vec<String>, hf: HLFlags) -> EditorSyntax {
+    fn new(f_type: &str, f_ext: Vec<String>, kw: Vec<String>, sc: String, hf: HLFlags) -> EditorSyntax {
         EditorSyntax{
             file_type: String::from(f_type),
             file_extensions: f_ext.clone(),
+            keywords: kw.clone(),
+            singleline_comment_start: sc,
             flags: hf,
-            numbers: 0,
         }
     }
 
@@ -72,6 +74,9 @@ impl EditorSyntax {
 pub enum Highlight {
     NONE,
     NORMAL,
+    COMMENT,
+    KEYWORD1,
+    KEYWORD2,
     NUMBER,
     MATCH,
     STRING,
@@ -522,13 +527,38 @@ impl EditorConfig {
         self.dirty = true;
     }
     
-    fn editor_delete_char(&mut self){
-        if self.cp.y == self.numrows {
+    fn editor_row_append(&mut self, at: usize, ap_vec: &mut Vec<u8>){
+        let del_pt: usize = self.erow[at].size as usize;
+        self.erow[at].chars.remove(del_pt);
+        self.erow[at].chars.append(ap_vec);
+        self.erow[at].size = self.erow[at].chars.len() as u16;
+    }
+
+    fn editor_delete_row(&mut self, at: usize){
+        if at >= self.numrows as usize{
             return;
         }
-        let mut at: i16 = (self.cp.x - 1) as i16;
-        self.erow[self.cp.y as usize].editor_row_delete_char(&mut at, &mut self.editor_syntax);
-        self.cp.x -= 1;
+        self.erow.remove(at);
+        self.numrows -= 1;
+        self.dirty = true;
+    }
+
+    fn editor_delete_char(&mut self){
+        if self.cp.y == self.numrows || (self.cp.x == 0 && self.cp.y == 0) {
+            return;
+        }
+        if self.cp.x > 0 {
+            let mut at: i16 = (self.cp.x - 1) as i16;
+            self.erow[self.cp.y as usize].editor_row_delete_char(&mut at, &mut self.editor_syntax);
+            self.cp.x -= 1;
+        }else{
+            self.cp.x = self.erow[(self.cp.y - 1) as usize].size;
+            let mut temp_row = self.erow[self.cp.y as usize].chars.clone();
+            self.editor_row_append((self.cp.y - 1 )as usize, &mut temp_row);
+            self.editor_delete_row(self.cp.y as usize);
+            self.cp.y -= 1;
+            self.erow[self.cp.y as usize].editor_update_row(&mut self.editor_syntax);
+        }
         self.dirty = true;
     }
     
@@ -601,7 +631,20 @@ impl EditorConfig {
             editor_syntax: EditorSyntaxInf {syntax:None, in_string:0},
             syntax_pattern: vec![
                 EditorSyntax::new("rust", 
-                    vec![String::from("rs"), String::from("toml")], 
+                    vec!["rs".to_string(), "toml".to_string()],
+                    vec![
+                        "if".to_string(),
+                        "while".to_string(),
+                        "for".to_string(),
+                        "continue".to_string(),
+                        "return".to_string(),
+                        "else".to_string(),
+                        "String|".to_string(),
+                        "usize|".to_string(),
+                        "u8|".to_string(),
+                        "u16|".to_string(),
+                        ],
+                    "//".to_string(), 
                     HLFlags::HLF_NUMBERS | HLFlags::HLF_STRINGS),
             ],
         };
@@ -652,8 +695,11 @@ fn editor_row_rxtocx(vec: Vec<u8>, rx: usize) -> u16 {
 fn editor_syntax_to_color(hl: &Highlight) -> u8 {
     match hl {
         Highlight::NUMBER => 31,
+        Highlight::KEYWORD1 => 33,
+        Highlight::KEYWORD2 => 32,
         Highlight::MATCH => 34,
         Highlight::STRING => 35,
+        Highlight::COMMENT => 36,
         _ => 37
     }
 }
@@ -661,10 +707,16 @@ fn editor_syntax_to_color(hl: &Highlight) -> u8 {
 fn editor_color_to_syntax(color: u8) -> Highlight {
     if color == 31 {
         Highlight::NUMBER
+    }else if color == 32 {
+        Highlight::KEYWORD2
+    }else if color == 33 {
+        Highlight::KEYWORD1
     }else if color == 34 {
         Highlight::MATCH
     }else if color == 35 {
         Highlight::STRING
+    }else if color == 36 {
+        Highlight::COMMENT
     }else {
         Highlight::NORMAL
     }
