@@ -1,4 +1,4 @@
-use super::{Highlight};
+use super::{Highlight, EditorSyntax, EditorSyntaxInf, HLFlags};
 
 pub const RILO_TAB_STOP: u16 = 8;
 
@@ -8,84 +8,39 @@ pub struct Erow {
     pub _rsize: u16,
     pub render: Vec<u8>,
     pub hl: Vec<Highlight>,
-    pub hl_open_comment: u16,
-    pub idx: u16,
 }
 
 impl Erow {
-/*
-    pub fn editor_update_syntax(&mut self, si: &mut EditorSyntaxInf) {
+    pub fn editor_update_syntax(&mut self, si: &mut EditorSyntaxInf){
         self.hl.clear();
-        self.hl = vec![Highlight::NORMAL; self._rsize as usize];
+        self.hl = vec![Highlight::NORMAL; self.render.len()];
         let es: &EditorSyntax;
         match &si.syntax {
             None => {
                 return;
             },
-            Some(val) => es = &val,
+            Some(val) => es = val,
         }
-
+        let scs_len = es.singleline_comment_start.len();
         let scs = es.singleline_comment_start.clone();
-        let mcs = es.multiline_comment_start.clone();
-        let mce = es.multiline_comment_end.clone();
-        let scs_len = scs.len();
-        let mcs_len = mcs.len();
-        let mce_len = mce.len();
-
         let mut idx = 0;
         let mut prev_sep = true;
         let mut prev_hl: Highlight;
-
         let erow_str: String = String::from_utf8(self.render.clone()).unwrap();
-        while idx < self._rsize as usize {
+        while idx < self.render.len() {
             if idx > 0 {
                 prev_hl = self.hl[idx - 1].clone();
             }else{
                 prev_hl = Highlight::NORMAL;
             }
-            if scs_len != 0 && si.in_string == 0 && si.in_comment == 0 {
+            if scs_len != 0 && si.in_string == 0 {
                 if (self._rsize as usize) - idx >= scs_len && 
-                        self.render[idx..(idx + scs_len)] == scs.as_bytes().to_vec() {
-                    while idx < self._rsize as usize {
+                    self.render[idx..(idx + scs_len)] == scs.as_bytes().to_vec() {
+                    while idx < self.render.len() {
                         self.hl[idx] = Highlight::COMMENT;
                         idx += 1;
                     }
                     return;
-                }
-            }
-            if mcs_len != 0 && mce_len != 0 && si.in_string == 0 {
-                if si.in_comment != 0 {
-                    self.hl[idx] = Highlight::MLCOMMENT;
-                    if (self._rsize as usize) - idx >= mce_len && 
-                            self.render[idx..(idx + mce_len)] == mce.as_bytes().to_vec(){
-                        let mut i = 1;
-                        idx += 1;
-                        while i <  mce_len {
-                            self.hl[idx] = Highlight::MLCOMMENT;
-                            idx += 1;
-                            i += 1;
-                        }
-                        si.in_comment = 0;
-                        prev_sep = true;
-                        continue;
-                    }else{
-                        idx += 1;
-                        continue;
-                    }
-                }else{
-                    if (self._rsize as usize) - idx >= mcs_len &&
-                            self.render[idx..(idx + mcs_len)] == mcs.as_bytes().to_vec(){
-                        self.hl[idx] = Highlight::MLCOMMENT;
-                        idx += 1;
-                        let mut i = 1;
-                        while i <  mce_len {
-                            self.hl[idx] = Highlight::MLCOMMENT;
-                            idx += 1;
-                            i += 1;
-                        }
-                        si.in_comment = 1;
-                        continue;
-                    }                    
                 }
             }
             if es.flags.contains(HLFlags::HLF_STRINGS) {
@@ -149,26 +104,24 @@ impl Erow {
             prev_sep = is_separator(self.render[idx] as char);
             idx += 1;
         }
-        self.hl_open_comment = si.in_comment as u16;
     }
-*/
 
-    pub fn editor_row_insert_character(&mut self, at: &mut i16, c: u8){
+    pub fn editor_row_insert_character(&mut self, at: &mut i16, c: u8, si: &mut EditorSyntaxInf){
         if *at < 0 || *at > self.size as i16 {
             *at = self.size as i16;
         }
         self.chars.insert(*at as usize, c);
         self.size += 1;
-        self.editor_update_row();
+        self.editor_update_row(si);
     }
 
-    pub fn editor_row_delete_char(&mut self, at: &mut i16){
+    pub fn editor_row_delete_char(&mut self, at: &mut i16, si: &mut EditorSyntaxInf){
         self.chars.remove(*at as usize);
         self.size -= 1;
-        self.editor_update_row();
+        self.editor_update_row(si);
     }
 
-    pub fn editor_update_row(&mut self) {
+    pub fn editor_update_row(&mut self, si: &mut EditorSyntaxInf) {
         let temp_vec = self.chars.clone();
         let v_iter = temp_vec.iter();
         let mut new_vec: Vec<u8> = Vec::new();
@@ -187,6 +140,16 @@ impl Erow {
         }
         self.render = new_vec;
         self._rsize = (self.render.len() - 1) as u16;
+        self.editor_update_syntax(si);
     } 
 
+}
+
+
+fn is_separator(c: char) -> bool {
+    match c {
+        ' ' | ',' | '.' | '(' | ')' | '+' | '-' | '/' | '*' |
+        '=' | '~' | '%' | '<' | '>' | '[' | ']' | ';' => true,
+        _ => false,
+    }
 }

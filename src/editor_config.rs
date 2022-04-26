@@ -34,7 +34,6 @@ bitflags! {
 pub struct EditorSyntaxInf {
     syntax: Option<EditorSyntax>,
     in_string: u8,
-    in_comment: u8,
 }
 
 #[derive(Clone)]
@@ -43,26 +42,16 @@ pub struct EditorSyntax {
     file_extensions: Vec<String>,
     pub keywords: Vec<String>,
     singleline_comment_start: String,
-    multiline_comment_start: String,
-    multiline_comment_end: String,
     pub flags: HLFlags,
 }
 
 impl EditorSyntax {
-    fn new(f_type: &str, 
-        f_ext: Vec<String>, 
-        kw: Vec<String>, 
-        sc: String, 
-        ms: String,
-        me: String,
-        hf: HLFlags) -> EditorSyntax {
+    fn new(f_type: &str, f_ext: Vec<String>, kw: Vec<String>, sc: String, hf: HLFlags) -> EditorSyntax {
         EditorSyntax{
             file_type: String::from(f_type),
             file_extensions: f_ext.clone(),
             keywords: kw.clone(),
             singleline_comment_start: sc,
-            multiline_comment_start: ms,
-            multiline_comment_end: me,
             flags: hf,
         }
     }
@@ -86,7 +75,6 @@ pub enum Highlight {
     NONE,
     NORMAL,
     COMMENT,
-    MLCOMMENT,
     KEYWORD1,
     KEYWORD2,
     NUMBER,
@@ -248,7 +236,7 @@ impl EditorConfig {
                 self.editor_syntax.syntax = Some(ts.clone());
                 let mut filerow: usize = 0;
                 while filerow < self.numrows as usize {
-                    self.editor_update_syntax(filerow);
+                    self.erow[filerow].editor_update_syntax(&mut self.editor_syntax);
                     filerow += 1;
                 }
             }
@@ -261,27 +249,23 @@ impl EditorConfig {
         self.filename = filename.as_bytes().to_vec();
         self.editor_select_syntax_highlight();
         let mut reader = io::BufReader::new(file);
-        //let mut line = String::new();
-        let mut line: Vec<u8> = Vec::new();
+        let mut line = String::new();
         loop{
-            //match reader.read_line(&mut line) {
-            match reader.read_until(0x0a, &mut line) {
+            match reader.read_line(&mut line) {
                 Ok(0) => break,
                 Ok(len) => {
-                    //let mut vec_line: Vec<u8> = line.clone();
+                    let mut vec_line: Vec<u8> = line.clone().as_bytes().to_vec();
                     let mut ll = len;
-                    while ll > 0 && (line[ll - 1] == '\r' as u8 || line[ll - 1] == '\n' as u8) {
+                    while ll > 0 && (vec_line[ll - 1] == '\r' as u8 || vec_line[ll - 1] == '\n' as u8) {
                         ll -= 1;
                     }
                     if ll != 0 {
-                        line.truncate(ll);
+                        vec_line.truncate(ll);
                         let at = self.numrows;
-                        self.editor_insert_row(&at, &mut line, ll as u16);
+                        self.editor_insert_row(&at, &mut vec_line, ll as u16);
                     }
                 },
-                Err(e) => {
-                    panic!("File read line fail:{:?}",e);
-                },
+                Err(e) => panic!("File read line fail:{:?}",e),
             };
             line.clear();
         }
@@ -298,19 +282,12 @@ impl EditorConfig {
             _rsize: 0,
             render: Vec::new(),
             hl: Vec::new(),
-            hl_open_comment: 0,
-            idx: *at,
         };
-        erow.editor_update_row();
+        erow.editor_update_row(&mut self.editor_syntax);
         self.erow.insert(*at as usize, erow);
-        let mut j = *at + 1;
-        while j < self.erow.len() as u16 {
-            self.erow[j as usize].idx += 1;
-            j += 1;
-        }
-        self.editor_update_syntax(*at as usize);
         self.numrows += 1;
     }
+    
     pub fn editor_scroll(&mut self){
         self.rx = 0;
         if self.cp.y < self.numrows {
@@ -436,40 +413,19 @@ impl EditorConfig {
                 }
             }else{
                 let mut disp_vec: Vec<u8> = self.erow[filerow as usize].render.clone();
-                let mut hl_vec: Vec<Highlight> = self.erow[filerow as usize].hl.clone();
-                disp_vec.truncate(self.erow[filerow as usize]._rsize as usize);
+                disp_vec.truncate(disp_vec.len());
                 
                 if self.off.col > 0 {
                     disp_vec.drain(1..self.off.col as usize);
-                    hl_vec.drain(1..self.off.col as usize);
                 }
     
                 if disp_vec.len() > self.screen.cols as usize {
                     disp_vec.truncate(self.screen.cols as usize - 1);
-                    hl_vec.truncate(self.screen.cols as usize - 1);
                 }
+                let hl_vec: Vec<Highlight> = self.erow[filerow as usize].hl.clone();
                 let mut idx = 0;
-
-                if !matches!(self.current_color, Highlight::NORMAL) {
-                    let clen = format!("\x1b[{}m", editor_syntax_to_color(&self.current_color)); 
-                    ab_append(abuf, &mut clen.as_bytes().to_vec());
-                }
-
-                while idx < disp_vec.len() {
-                    if disp_vec[idx] != 0x00 && (
-                            disp_vec[idx] <= 0x1f || disp_vec[idx] == 0x7f) {
-                        let mut sym: u8 = disp_vec[idx] + '@' as u8;
-                        if disp_vec[idx] == 0x7f {
-                            sym = '?' as u8;
-                        }
-                        ab_append(abuf, &mut "\x1b[7m".as_bytes().to_vec());
-                        ab_append(abuf, &mut std::slice::from_ref(&sym).to_vec());
-                        ab_append(abuf, &mut "\x1b[m".as_bytes().to_vec());
-                        if !matches!(self.current_color, Highlight::NORMAL){
-                            let clen = format!("\x1b[{}m", editor_syntax_to_color(&self.current_color)); 
-                            ab_append(abuf, &mut clen.as_bytes().to_vec());
-                        }
-                    }else if let Highlight::NORMAL = hl_vec[idx]  {
+                while idx < hl_vec.len() {
+                    if let Highlight::NORMAL = hl_vec[idx]  {
                         if !matches!(self.current_color, Highlight::NORMAL) {
                             ab_append(abuf, &mut "\x1b[39m".as_bytes().to_vec());
                             self.current_color = Highlight::NORMAL;
@@ -478,8 +434,7 @@ impl EditorConfig {
                     }else{
                         let color: u8 = editor_syntax_to_color(&hl_vec[idx]);
                         if color != editor_syntax_to_color(&self.current_color) {
-                            //self.current_color = editor_color_to_syntax(color);
-                            self.current_color = hl_vec[idx].clone();
+                            self.current_color = editor_color_to_syntax(color);
                             let clen = format!("\x1b[{}m", color); 
                             ab_append(abuf, &mut clen.as_bytes().to_vec());
                         }
@@ -487,13 +442,13 @@ impl EditorConfig {
                     }
                     idx += 1;
                 }
-                //ab_append(abuf, &mut "\x1b[39m".as_bytes().to_vec());
+                ab_append(abuf, &mut "\x1b[39m".as_bytes().to_vec());
             }
             ab_append(abuf, &mut "\x1b[K".as_bytes().to_vec());
             ab_append(abuf, &mut "\r\n".as_bytes().to_vec());
             y += 1;
         }
-        ab_append(abuf, &mut "\x1b[39m".as_bytes().to_vec());
+
     }
 
     fn editor_draw_message_bar(&self, abuf: &mut AppendBuffer){
@@ -550,12 +505,10 @@ impl EditorConfig {
         }else{
             at += 1;
             let mut row = self.erow[self.cp.y as usize].chars.split_off(self.cp.x as usize);
-            self.erow[self.cp.y as usize].chars.append(&mut "\0".as_bytes().to_vec());
             self.erow[self.cp.y as usize].size =
                 (self.erow[self.cp.y as usize].chars.len() - 1) as u16;
-            self.erow[self.cp.y as usize].editor_update_row();
-            self.editor_update_syntax(self.cp.y as usize);
-            let size = (row.len() - 1) as u16;
+            self.erow[self.cp.y as usize].editor_update_row(&mut self.editor_syntax);
+            let size = row.len() as u16;
             self.editor_insert_row(&at, &mut row,  size)
         }
         self.cp.y += 1;
@@ -569,8 +522,7 @@ impl EditorConfig {
             self.editor_insert_row(&at, &mut "".as_bytes().to_vec(), 0);
         }
         let mut at: i16 = self.cp.x as i16; 
-        self.erow[self.cp.y as usize].editor_row_insert_character(&mut at, *c);
-        self.editor_update_syntax(self.cp.y as usize);
+        self.erow[self.cp.y as usize].editor_row_insert_character(&mut at, *c, &mut self.editor_syntax);
         self.cp.x += 1;
         self.dirty = true;
     }
@@ -582,165 +534,11 @@ impl EditorConfig {
         self.erow[at].size = self.erow[at].chars.len() as u16;
     }
 
-    fn editor_update_syntax(&mut self, at: usize){
-        self.erow[at].hl.clear();
-        self.erow[at].hl = vec![Highlight::NORMAL; self.erow[at]._rsize as usize];
-        let es: &mut EditorSyntax;
-        match &mut self.editor_syntax.syntax {
-            None => {
-                return;
-            },
-            Some(val) => es = val,
-        }
-
-        let scs = es.singleline_comment_start.clone();
-        let mcs = es.multiline_comment_start.clone();
-        let mce = es.multiline_comment_end.clone();
-        let scs_len = scs.len();
-        let mcs_len = mcs.len();
-        let mce_len = mce.len();
-
-        let mut idx = 0;
-        let mut prev_sep = true;
-        let mut prev_hl: Highlight;
-        self.editor_syntax.in_string = 0;
-        if self.erow[at].idx > 0 {
-            self.editor_syntax.in_comment = self.erow[at - 1].hl_open_comment as u8;
-        }
-
-        let erow_str: String = String::from_utf8(self.erow[at].render.clone()).unwrap();
-        while idx < self.erow[at]._rsize as usize {
-            if idx > 0 {
-                prev_hl = self.erow[at].hl[idx - 1].clone();
-            }else{
-                prev_hl = Highlight::NORMAL;
-            }
-            if scs_len != 0 && self.editor_syntax.in_string == 0 && self.editor_syntax.in_comment == 0 {
-                if (self.erow[at]._rsize as usize) - idx >= scs_len && 
-                        self.erow[at].render[idx..(idx + scs_len)] == scs.as_bytes().to_vec() {
-                    while idx < self.erow[at]._rsize as usize {
-                        self.erow[at].hl[idx] = Highlight::COMMENT;
-                        idx += 1;
-                    }
-                    return;
-                }
-            }
-            if mcs_len != 0 && mce_len != 0 && self.editor_syntax.in_string == 0 {
-                if self.editor_syntax.in_comment != 0 {
-                    self.erow[at].hl[idx] = Highlight::MLCOMMENT;
-                    if (self.erow[at]._rsize as usize) - idx >= mce_len && 
-                        self.erow[at].render[idx..(idx + mce_len)] == mce.as_bytes().to_vec(){
-                        let mut i = 1;
-                        idx += 1;
-                        while i <  mce_len {
-                            self.erow[at].hl[idx] = Highlight::MLCOMMENT;
-                            idx += 1;
-                            i += 1;
-                        }
-                        self.editor_syntax.in_comment = 0;
-                        prev_sep = true;
-                        continue;
-                    }else{
-                        idx += 1;
-                        continue;
-                    }
-                }else{
-                    if (self.erow[at]._rsize as usize) - idx >= mcs_len &&
-                        self.erow[at].render[idx..(idx + mcs_len)] == mcs.as_bytes().to_vec(){
-                        self.erow[at].hl[idx] = Highlight::MLCOMMENT;
-                        idx += 1;
-                        let mut i = 1;
-                        while i <  mce_len {
-                            self.erow[at].hl[idx] = Highlight::MLCOMMENT;
-                            idx += 1;
-                            i += 1;
-                        }
-                        self.editor_syntax.in_comment = 1;
-                        continue;
-                    }                    
-                }
-            }
-            if es.flags.contains(HLFlags::HLF_STRINGS) {
-                if self.editor_syntax.in_string != 0 {
-                    self.erow[at].hl[idx] = Highlight::STRING;
-                    if self.erow[at].render[idx] as char == '\\' && idx + 1 < self.erow[at]._rsize as usize {
-                        self.erow[at].hl[idx + 1] = Highlight::STRING;
-                        idx += 2;
-                        continue;
-                    }
-                    if self.erow[at].render[idx] == self.editor_syntax.in_string { 
-                        self.editor_syntax.in_string = 0; 
-                    }
-                    idx += 1;
-                    prev_sep = true;
-                    continue;
-                }else{
-                    if self.erow[at].render[idx] as char == '"' || self.erow[at].render[idx] as char == '\'' {
-                        self.editor_syntax.in_string = self.erow[at].render[idx];
-                        self.erow[at].hl[idx] = Highlight::STRING;
-                        idx += 1;
-                        continue;
-                    }
-                }
-            }
-            if es.flags.contains(HLFlags::HLF_NUMBERS) {
-                if (self.erow[at].render[idx] as char).is_numeric() &&
-                        ( matches!(prev_hl, Highlight::NUMBER) || prev_sep){
-                    self.erow[at].hl[idx] = Highlight::NUMBER;
-                    idx += 1;
-                    prev_sep = false;
-                    continue;
-                }
-            }
-            if prev_sep {
-                let mut kwd: String;
-                let mut hlk: Highlight;
-                let mut k_idx: usize = 0;
-                while k_idx < es.keywords.len() {
-                    kwd = es.keywords[k_idx].clone();
-                    if &kwd[kwd.len() - 1..kwd.len()] == "|" {
-                        kwd.pop();
-                        hlk = Highlight::KEYWORD2;
-                    }else{
-                        hlk = Highlight::KEYWORD1;
-                    }
-                    if (self.erow[at]._rsize as usize) - idx >= kwd.len() && 
-                            &erow_str[idx..(idx + kwd.len())] == &kwd[..] {
-                        let hl_max = idx + kwd.len();
-                        while idx < hl_max {
-                            self.erow[at].hl[idx] = hlk.clone();
-                            idx += 1;
-                        }
-                        break;
-                    }
-                    k_idx += 1;
-                }
-                if k_idx != es.keywords.len(){
-                    prev_sep = false;
-                    continue;
-                }
-            }
-            prev_sep = is_separator(self.erow[at].render[idx] as char);
-            idx += 1;
-        }
-        let changed: bool = self.erow[at].hl_open_comment != self.editor_syntax.in_comment as u16;
-        self.erow[at].hl_open_comment = self.editor_syntax.in_comment as u16;
-        if changed && self.erow[at].idx + 1 < self.numrows {
-            self.editor_update_syntax(at + 1);
-        }
-
-    }
-
     fn editor_delete_row(&mut self, at: usize){
         if at >= self.numrows as usize{
             return;
         }
         self.erow.remove(at);
-        let mut j = at;
-        while j < self.erow.len(){
-            self.erow[j as usize].idx -= 1;
-            j += 1;
-        }
         self.numrows -= 1;
         self.dirty = true;
     }
@@ -751,8 +549,7 @@ impl EditorConfig {
         }
         if self.cp.x > 0 {
             let mut at: i16 = (self.cp.x - 1) as i16;
-            self.erow[self.cp.y as usize].editor_row_delete_char(&mut at);
-            self.editor_update_syntax(self.cp.y as usize);
+            self.erow[self.cp.y as usize].editor_row_delete_char(&mut at, &mut self.editor_syntax);
             self.cp.x -= 1;
         }else{
             self.cp.x = self.erow[(self.cp.y - 1) as usize].size;
@@ -760,8 +557,7 @@ impl EditorConfig {
             self.editor_row_append((self.cp.y - 1 )as usize, &mut temp_row);
             self.editor_delete_row(self.cp.y as usize);
             self.cp.y -= 1;
-            self.erow[self.cp.y as usize].editor_update_row();
-            self.editor_update_syntax(self.cp.y as usize);
+            self.erow[self.cp.y as usize].editor_update_row(&mut self.editor_syntax);
         }
         self.dirty = true;
     }
@@ -832,7 +628,7 @@ impl EditorConfig {
             current_color: Highlight::NONE,
             saved_hl: Vec::new(),
             saved_hl_line: -1,
-            editor_syntax: EditorSyntaxInf {syntax:None, in_string:0, in_comment:0},
+            editor_syntax: EditorSyntaxInf {syntax:None, in_string:0},
             syntax_pattern: vec![
                 EditorSyntax::new("rust", 
                     vec!["rs".to_string(), "toml".to_string()],
@@ -849,8 +645,6 @@ impl EditorConfig {
                         "u16|".to_string(),
                         ],
                     "//".to_string(), 
-                    "/*".to_string(),
-                    "*/".to_string(),
                     HLFlags::HLF_NUMBERS | HLFlags::HLF_STRINGS),
             ],
         };
@@ -906,12 +700,10 @@ fn editor_syntax_to_color(hl: &Highlight) -> u8 {
         Highlight::MATCH => 34,
         Highlight::STRING => 35,
         Highlight::COMMENT => 36,
-        Highlight::MLCOMMENT => 31,
         _ => 37
     }
 }
 
-/*
 fn editor_color_to_syntax(color: u8) -> Highlight {
     if color == 31 {
         Highlight::NUMBER
@@ -929,7 +721,7 @@ fn editor_color_to_syntax(color: u8) -> Highlight {
         Highlight::NORMAL
     }
 }
-*/
+
 fn editor_find_callback(ec: &mut EditorConfig, query: &String, key: &EditorKey) {
     if ec.saved_hl.len() != 0 {
         ec.erow[ec.saved_hl_line as usize].hl = ec.saved_hl.clone();
@@ -989,13 +781,5 @@ fn editor_find_callback(ec: &mut EditorConfig, query: &String, key: &EditorKey) 
             }
         }
         i += 1;
-    }
-}
-
-fn is_separator(c: char) -> bool {
-    match c {
-        ' ' | ',' | '.' | '(' | ')' | '+' | '-' | '/' | '*' |
-        '=' | '~' | '%' | '<' | '>' | '[' | ']' | ';' => true,
-        _ => false,
     }
 }
